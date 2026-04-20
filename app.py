@@ -1,5 +1,5 @@
 import os
-import gc
+import time
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import pandas as pd
@@ -8,29 +8,26 @@ from models import run_all
 app = Flask(__name__)
 CORS(app)
 
+# ✅ upload folder
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-# ✅ Optimized file reader (LOW MEMORY)
+# ✅ file reader (CSV + Excel)
 def read_file(file, filename):
     filename = filename.lower()
 
-    print("📂 Reading file:", filename)
-
     if filename.endswith(".csv"):
-        # CSV is lighter
         return pd.read_csv(file)
 
     elif filename.endswith(".xlsx") or filename.endswith(".xls"):
-        # limit rows at read time (IMPORTANT)
-        return pd.read_excel(file, engine="openpyxl", nrows=300)
+        return pd.read_excel(file)
 
     else:
         raise ValueError("Unsupported file format")
 
 
-# ✅ serve frontend
+# serve frontend
 @app.route("/")
 def home():
     return send_from_directory(".", "index.html")
@@ -39,8 +36,6 @@ def home():
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        print("🚀 Request received")
-
         train_file = request.files.get("train")
         test_file = request.files.get("test")
 
@@ -49,47 +44,36 @@ def predict():
 
         # 🔥 CASE 1: Uploaded files
         if train_file and test_file:
-            train_df = read_file(train_file, train_file.filename)
-            test_df = read_file(test_file, test_file.filename)
+            train_filename = str(int(time.time())) + "_" + train_file.filename
+            test_filename = str(int(time.time())) + "_" + test_file.filename
 
-        # 🔥 CASE 2: Saved files
+            train_path = os.path.join(UPLOAD_FOLDER, train_filename)
+            test_path = os.path.join(UPLOAD_FOLDER, test_filename)
+
+            train_file.save(train_path)
+            test_file.save(test_path)
+
+        # 🔥 CASE 2: Dropdown files
         elif train_name and test_name:
             train_path = os.path.join(UPLOAD_FOLDER, train_name)
             test_path = os.path.join(UPLOAD_FOLDER, test_name)
 
-            train_df = read_file(open(train_path, "rb"), train_path)
-            test_df = read_file(open(test_path, "rb"), test_path)
-
         else:
             return jsonify({"error": "Upload OR select both files"}), 400
 
-        # 🔥 EXTRA SAFETY LIMIT (in case CSV)
-        train_df = train_df.head(300)
-        test_df = test_df.head(300)
+        # ✅ READ FILES
+        with open(train_path, "rb") as f:
+            train_df = read_file(f, train_path)
 
-        print("📊 Data loaded")
-        print("Train shape:", train_df.shape)
-        print("Test shape:", test_df.shape)
+        with open(test_path, "rb") as f:
+            test_df = read_file(f, test_path)
 
-        # ✅ Run ML
-        print("⚙️ Running model...")
+        # run ML
         result = run_all(train_df, test_df)
-
-        print("✅ Model completed")
-
-        # ✅ FORCE MEMORY CLEANUP
-        del train_df
-        del test_df
-        gc.collect()
 
         return jsonify(result)
 
     except Exception as e:
-        print("❌ ERROR:", str(e))
-
-        # Cleanup even on failure
-        gc.collect()
-
         return jsonify({"error": str(e)}), 500
 
 
@@ -100,6 +84,6 @@ def list_files():
     return jsonify({"files": files})
 
 
+# 🔥 DEPLOYMENT FIX (IMPORTANT)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
